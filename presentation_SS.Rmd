@@ -1,0 +1,558 @@
+---
+title: "Regression and Classification Results"
+subtitle: "Machine Learning Project"
+author: "Szymon Socha"
+date: "June 6, 2022"
+output: beamer_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Regression
+
+
+Algorithms considered:
+
+* Linear Regression, Lasso, Ridge, Elastic Net
+* **Random Forrest Regressor**
+* k-Nearest Neighbors Regressor
+* Support-Vector Machine
+
+Algorithm selection:
+
+* Manual Cross Validation parameter tuning
+* Out-of-sample accuracy comparision of various algorithms
+* **Random Forrest Regressor with `n_estimators=1000`, `max_features=38`, `min_samples_split=19`, `max_depth=35`, `min_samples_leaf = 3`**
+
+
+## Regression
+
+```{python, message=FALSE, echo=FALSE, results='hide'}
+import warnings
+warnings.filterwarnings("ignore")
+from  warnings import simplefilter
+from sklearn.exceptions import ConvergenceWarning
+
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+import seaborn as sns
+import matplotlib.pyplot as plt
+#%matplotlib inline
+
+from sklearn import linear_model
+from sklearn import metrics
+from sklearn import ensemble
+from sklearn.metrics import mean_squared_error, roc_auc_score, mean_absolute_percentage_error
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.model_selection import train_test_split, KFold, GridSearchCV
+
+traffic_train = pd.read_csv("C:/Users/szymo/Desktop/Studia/Machine Learning I/Projekt/regression/data/traffic_train.csv")
+traffic_train = traffic_train.dropna()
+
+traffic_train = traffic_train[traffic_train.traffic != 0]
+
+traffic_test = pd.read_csv("C:/Users/szymo/Desktop/Studia/Machine Learning I/Projekt/regression/data/traffic_test.csv")
+traffic_test.drop(columns=['snow_mm', 'rain_mm'], inplace = True)
+
+traffic_train = traffic_train[traffic_train.temperature > -50]
+
+traffic_train = traffic_train[traffic_train.snow_mm == 0]
+traffic_train = traffic_train[traffic_train.rain_mm == 0]
+traffic_train.drop(columns=['snow_mm', 'rain_mm'], inplace = True)
+
+#traffic_train = traffic_train[traffic_train.rain_mm < 60]
+#traffic_train['log_rain_mm'] = np.log(traffic_train.rain_mm+1)
+#traffic_train = traffic_train[traffic_train.snow_mm < 120]
+#traffic_train['log_snow_mm'] = np.log(traffic_train.snow_mm+1)
+
+#traffic_train['year'] = pd.to_datetime(traffic_train['date_time']).dt.year
+traffic_train['month'] = pd.to_datetime(traffic_train['date_time']).dt.month
+traffic_train['hour'] = pd.to_datetime(traffic_train['date_time']).dt.hour
+traffic_train["is_weekend"] = pd.to_datetime(traffic_train['date_time']).dt.dayofweek > 5
+traffic_train['weekday'] = pd.to_datetime(traffic_train['date_time']).dt.dayofweek
+#traffic_train = pd.get_dummies(traffic_train, columns=['weather_general', 'weather_detailed', 'year', 'month'])
+
+traffic_train['part_of_day'] = pd.cut(traffic_train['hour'], bins=[0,4,7,13,19,24], labels=['Night', 'Morning','Noon','Evening', 'Night'], include_lowest=True, ordered=False)
+traffic_train['clouds_coverage_pct'] = pd.cut(x=traffic_train['clouds_coverage_pct'], bins=[-1,10,30,50,70,90,100], labels=[0, 20, 40, 60, 80, 100])
+
+traffic_train = pd.get_dummies(traffic_train, columns=['weather_general', 'weather_detailed', 'month', 'hour', 'is_weekend', 'weekday', 'part_of_day'])
+
+traffic_train["weather_general_Clouds"] = traffic_train["weather_general_Clouds"] + traffic_train["weather_general_Squall"]
+traffic_train.drop(columns=["weather_general_Squall"], inplace=True)
+
+traffic_train["weather_general_Clouds"] = traffic_train["weather_general_Clouds"] + traffic_train['weather_detailed_squalls']
+traffic_train.drop(columns=['weather_detailed_squalls'], inplace=True)
+
+traffic_train["weather_general_Fog"] = traffic_train["weather_general_Fog"] + traffic_train["weather_general_Smoke"]
+traffic_train.drop(columns=["weather_general_Smoke"], inplace=True)
+
+
+traffic_train["weather_detailed_drizzle"] = traffic_train["weather_detailed_drizzle"] + traffic_train["weather_detailed_heavy intensity drizzle"]
+traffic_train.drop(columns=["weather_detailed_heavy intensity drizzle"], inplace=True)
+
+traffic_train["weather_detailed_drizzle"] = traffic_train["weather_detailed_drizzle"] + traffic_train["weather_detailed_shower drizzle"]
+traffic_train.drop(columns=["weather_detailed_shower drizzle"], inplace=True)
+
+traffic_train["weather_detailed_drizzle"] = traffic_train["weather_detailed_drizzle"] + traffic_train['weather_detailed_light intensity drizzle']
+traffic_train.drop(columns=['weather_detailed_light intensity drizzle'], inplace=True)
+
+traffic_train["weather_detailed_light rain"] = traffic_train["weather_detailed_light rain"] + traffic_train["weather_detailed_light rain and snow"]
+traffic_train.drop(columns=["weather_detailed_light rain and snow"], inplace=True)
+
+traffic_train["weather_detailed_light rain"] = traffic_train["weather_detailed_light rain"] + traffic_train['weather_detailed_proximity shower rain']
+traffic_train.drop(columns=['weather_detailed_proximity shower rain'], inplace=True)
+
+traffic_train["weather_detailed_moderate rain"] = traffic_train["weather_detailed_moderate rain"] + traffic_train['weather_detailed_freezing rain']
+traffic_train.drop(columns=['weather_detailed_freezing rain'], inplace=True)
+
+
+traffic_train["weather_detailed_thunderstorm with rain"] = traffic_train["weather_detailed_thunderstorm with rain"] + traffic_train["weather_detailed_thunderstorm with light drizzle"]
+traffic_train.drop(columns=["weather_detailed_thunderstorm with light drizzle"], inplace=True)
+
+
+traffic_train["weather_detailed_light snow"] = traffic_train["weather_detailed_light snow"] + traffic_train["weather_detailed_light shower snow"]
+traffic_train.drop(columns=["weather_detailed_light shower snow"], inplace=True)
+
+traffic_train["weather_detailed_light snow"] = traffic_train["weather_detailed_light rain"] + traffic_train["weather_detailed_shower snow"]
+traffic_train.drop(columns=["weather_detailed_shower snow"], inplace=True)
+
+traffic_train["weather_detailed_snow"] = traffic_train["weather_detailed_snow"] + traffic_train["weather_detailed_sleet"]
+traffic_train.drop(columns=["weather_detailed_sleet"], inplace=True)
+
+
+
+traffic_train["weather_detailed_proximity thunderstorm"] = traffic_train["weather_detailed_proximity thunderstorm"] + traffic_train["weather_detailed_proximity thunderstorm with drizzle"]
+traffic_train.drop(columns=["weather_detailed_proximity thunderstorm with drizzle"], inplace=True)
+
+traffic_train["weather_detailed_proximity thunderstorm"] = traffic_train["weather_detailed_proximity thunderstorm"] + traffic_train["weather_detailed_proximity thunderstorm with rain"]
+traffic_train.drop(columns=["weather_detailed_proximity thunderstorm with rain"], inplace=True)
+
+traffic_train["weather_detailed_thunderstorm"] = traffic_train["weather_detailed_thunderstorm"] + traffic_train["weather_detailed_thunderstorm with heavy rain"] + traffic_train["weather_detailed_thunderstorm with light rain"] + traffic_train["weather_detailed_thunderstorm with rain"]
+traffic_train.drop(columns=["weather_detailed_thunderstorm with heavy rain", "weather_detailed_thunderstorm with light rain", "weather_detailed_thunderstorm with rain"], inplace=True)
+
+
+traffic_train["weather_detailed_fog"] = traffic_train["weather_detailed_fog"] + traffic_train["weather_detailed_smoke"]
+traffic_train.drop(columns=["weather_detailed_smoke"], inplace=True)
+
+traffic_train.drop(columns=['weather_detailed_fog', 'weather_detailed_snow', 'weather_detailed_thunderstorm', 'weather_detailed_mist', 'weather_detailed_drizzle', 'weather_detailed_haze', 'weather_detailed_proximity thunderstorm'], inplace=True)
+
+# Ordinal sky
+scale_mapper = {'weather_detailed_sky is clear':0, 'weather_detailed_broken clouds':0.25, 'weather_detailed_few clouds':0.5 , 'weather_detailed_scattered clouds':0.75 , 'weather_detailed_overcast clouds':1}
+traffic_train["clear_sky_ordinal"] = traffic_train[['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds']].idxmax(axis=1).replace(scale_mapper)
+traffic_train.drop(columns=['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds'], inplace=True)
+
+# Ordinal rain
+scale_mapper = {'weather_detailed_light intensity shower rain':0, 'weather_detailed_light rain':0.33 , 'weather_detailed_moderate rain':0.66 , 'weather_detailed_heavy intensity rain':1}
+traffic_train["rain_strength_ordinal"] = traffic_train[['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain']].idxmax(axis=1).replace(scale_mapper)
+traffic_train.drop(columns=['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain'], inplace=True)
+
+# Ordinal snow
+scale_mapper = {'weather_detailed_light snow':0, 'weather_detailed_heavy snow':1}
+traffic_train["snow_strength_ordinal"] = traffic_train[['weather_detailed_light snow', 'weather_detailed_heavy snow']].idxmax(axis=1).replace(scale_mapper)
+traffic_train.drop(columns=['weather_detailed_light snow', 'weather_detailed_heavy snow'], inplace=True)
+
+traffic_train.loc[traffic_train['weather_general_Clear'] > 1, 'weather_general_Clear'] = 1
+traffic_train.loc[traffic_train['weather_general_Clouds'] > 1, 'weather_general_Clouds'] = 1
+traffic_train.loc[traffic_train['weather_general_Drizzle'] > 1, 'weather_general_Drizzle'] = 1
+traffic_train.loc[traffic_train['weather_general_Fog'] > 1, 'weather_general_Fog'] = 1
+traffic_train.loc[traffic_train['weather_general_Haze'] > 1, 'weather_general_Haze'] = 1
+traffic_train.loc[traffic_train['weather_general_Mist'] > 1, 'weather_general_Mist'] = 1
+traffic_train.loc[traffic_train['weather_general_Rain'] > 1, 'weather_general_Rain'] = 1
+traffic_train.loc[traffic_train['weather_general_Snow'] > 1, 'weather_general_Snow'] = 1
+traffic_train.loc[traffic_train['weather_general_Thunderstorm'] > 1, 'weather_general_Thunderstorm'] = 1
+
+features = traffic_train.columns.drop(['date_time','traffic'])
+
+
+df = traffic_train[:21000]
+target = "traffic"
+
+x_train = traffic_train[:21000][features]
+x_test = traffic_train[21001:][features]
+y_train = traffic_train[:21000][target]
+y_test = traffic_train[21001:][target]
+
+
+# Random Forrest Regressor
+def CVTestRFRegress(nFolds = 6, randomState=2020, debug=False, features=features, *args, **kwargs):
+    kf = KFold(n_splits=nFolds, shuffle=True, random_state=randomState)
+    
+    # Lists to store the results
+    testResults = []
+    trainResults = []
+    predictions = []
+    indices = []
+
+    # Model validation on consecutive folds
+    for train, test in kf.split(df.index.values):
+        # Prepare the estimator
+        clf = Pipeline([("scaler", RobustScaler()), ("classifier",RandomForestRegressor(*args, **kwargs, random_state=randomState))])
+        #clf = RandomForestRegressor(*args, **kwargs, random_state=randomState, n_jobs=-1)
+        if debug:
+            print(clf)
+        # Train the model
+        clf.fit(df.iloc[train][features], df.iloc[train][target])
+
+        predsTrain = clf.predict(df.iloc[train][features])
+        preds = clf.predict(df.iloc[test][features])
+        
+        # Save each fold predictions
+        predictions.append(preds.tolist().copy())
+        
+        # Store index for original dataset
+        indices.append(df.iloc[test].index.tolist().copy())
+        
+        # Get MAPE score from each fold
+        trainScore = mean_absolute_percentage_error(df[target].iloc[train], predsTrain)
+        testScore = mean_absolute_percentage_error(df[target].iloc[test], preds)
+        
+        # Store Mape results to list  
+        trainResults.append(trainScore)
+        testResults.append(testScore)
+        
+        # Optionally, print results for each fold
+        if debug:
+            print("Train MAPE:", trainScore,
+                  "Valid MAPE:", testScore)
+        
+    return trainResults, testResults, predictions, indices
+    
+pipeline_best_forrest = Pipeline([("scaler", RobustScaler()), ("classifier",RandomForestRegressor(n_estimators=1000, max_features=38, min_samples_split=19, max_depth=35, min_samples_leaf = 3, random_state=2137))])
+
+pipeline_best_forrest.fit(x_train, y_train)
+y_best_forrest = pipeline_best_forrest.predict(x_test)
+```
+
+```{python}
+y1 = y_test[800:1000].array.to_numpy() # real values
+y2 = y_best_forrest[800:1000] # predictions
+
+import matplotlib.pyplot as plt
+p1, =plt.plot(y1, label='Real values')
+p2, =plt.plot(y2, linestyle='dashed', label='Fitted values')
+plt.legend(handles=[p1, p2], title='', bbox_to_anchor=(0.5, -0.05), loc='upper left')
+plt.title("Out-of-sample Random Forrest accuracy")
+```
+
+```{python, message=FALSE, echo=FALSE}
+traffic_test = pd.read_csv("C:/Users/szymo/Desktop/Studia/Machine Learning I/Projekt/regression/data/traffic_test.csv")
+
+traffic_test.drop(columns=['snow_mm', 'rain_mm'], inplace = True)
+traffic_test = traffic_test[traffic_test.temperature > -50]
+
+traffic_test['month'] = pd.to_datetime(traffic_test['date_time']).dt.month
+traffic_test['hour'] = pd.to_datetime(traffic_test['date_time']).dt.hour
+traffic_test["is_weekend"] = pd.to_datetime(traffic_test['date_time']).dt.dayofweek > 5
+traffic_test['weekday'] = pd.to_datetime(traffic_test['date_time']).dt.dayofweek
+traffic_test.drop(columns=['date_time'], inplace = True)
+
+traffic_test['part_of_day'] = pd.cut(traffic_test['hour'], bins=[0,4,7,13,19,24], labels=['Night', 'Morning','Noon','Evening', 'Night'], include_lowest=True, ordered=False)
+traffic_test['clouds_coverage_pct'] = pd.cut(x=traffic_test['clouds_coverage_pct'], bins=[-1,10,30,50,70,90,100], labels=[0, 20, 40, 60, 80, 100])
+
+traffic_test = pd.get_dummies(traffic_test, columns=['weather_general', 'weather_detailed', 'month', 'hour', 'is_weekend', 'weekday', 'part_of_day'])
+
+traffic_test["weather_general_Fog"] = traffic_test["weather_general_Fog"] + traffic_test["weather_general_Smoke"]
+traffic_test.drop(columns=["weather_general_Smoke"], inplace=True)
+
+
+traffic_test["weather_detailed_drizzle"] = traffic_test["weather_detailed_drizzle"] + traffic_test["weather_detailed_heavy intensity drizzle"]
+traffic_test.drop(columns=["weather_detailed_heavy intensity drizzle"], inplace=True)
+
+traffic_test["weather_detailed_drizzle"] = traffic_test["weather_detailed_drizzle"] + traffic_test["weather_detailed_shower drizzle"]
+traffic_test.drop(columns=["weather_detailed_shower drizzle"], inplace=True)
+
+traffic_test["weather_detailed_drizzle"] = traffic_test["weather_detailed_drizzle"] + traffic_test['weather_detailed_light intensity drizzle']
+traffic_test.drop(columns=['weather_detailed_light intensity drizzle'], inplace=True)
+
+traffic_test["weather_detailed_light rain"] = traffic_test["weather_detailed_light rain"] + traffic_test["weather_detailed_light rain and snow"]
+traffic_test.drop(columns=["weather_detailed_light rain and snow"], inplace=True)
+
+traffic_test["weather_detailed_light rain"] = traffic_test["weather_detailed_light rain"] + traffic_test['weather_detailed_proximity shower rain']
+traffic_test.drop(columns=['weather_detailed_proximity shower rain'], inplace=True)
+
+traffic_test["weather_detailed_thunderstorm with rain"] = traffic_test["weather_detailed_thunderstorm with rain"] + traffic_test["weather_detailed_thunderstorm with light drizzle"]
+traffic_test.drop(columns=["weather_detailed_thunderstorm with light drizzle"], inplace=True)
+
+
+traffic_test["weather_detailed_light snow"] = traffic_test["weather_detailed_light snow"] + traffic_test["weather_detailed_light shower snow"]
+traffic_test.drop(columns=["weather_detailed_light shower snow"], inplace=True)
+
+traffic_test["weather_detailed_snow"] = traffic_test["weather_detailed_snow"] + traffic_test["weather_detailed_sleet"]
+traffic_test.drop(columns=["weather_detailed_sleet"], inplace=True)
+
+traffic_test["weather_detailed_proximity thunderstorm"] = traffic_test["weather_detailed_proximity thunderstorm"] + traffic_test["weather_detailed_proximity thunderstorm with drizzle"]
+traffic_test.drop(columns=["weather_detailed_proximity thunderstorm with drizzle"], inplace=True)
+
+traffic_test["weather_detailed_proximity thunderstorm"] = traffic_test["weather_detailed_proximity thunderstorm"] + traffic_test["weather_detailed_proximity thunderstorm with rain"]
+traffic_test.drop(columns=["weather_detailed_proximity thunderstorm with rain"], inplace=True)
+
+traffic_test["weather_detailed_thunderstorm"] = traffic_test["weather_detailed_thunderstorm"] + traffic_test["weather_detailed_thunderstorm with heavy rain"] + traffic_test["weather_detailed_thunderstorm with light rain"] + traffic_test["weather_detailed_thunderstorm with rain"]
+traffic_test.drop(columns=["weather_detailed_thunderstorm with heavy rain", "weather_detailed_thunderstorm with light rain", "weather_detailed_thunderstorm with rain"], inplace=True)
+
+traffic_test["weather_detailed_fog"] = traffic_test["weather_detailed_fog"] + traffic_test["weather_detailed_smoke"]
+traffic_test.drop(columns=["weather_detailed_smoke"], inplace=True)
+
+traffic_test.drop(columns=['weather_detailed_fog', 'weather_detailed_snow', 'weather_detailed_thunderstorm', 'weather_detailed_mist', 'weather_detailed_drizzle', 'weather_detailed_haze', 'weather_detailed_proximity thunderstorm'], inplace=True)
+
+scale_mapper = {'weather_detailed_sky is clear':0, 'weather_detailed_broken clouds':0.25, 'weather_detailed_few clouds':0.5 , 'weather_detailed_scattered clouds':0.75 , 'weather_detailed_overcast clouds':1}
+traffic_test["clear_sky_ordinal"] = traffic_test[['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds']].idxmax(axis=1).replace(scale_mapper)
+traffic_test.drop(columns=['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds'], inplace=True)
+
+scale_mapper = {'weather_detailed_light intensity shower rain':0, 'weather_detailed_light rain':0.33 , 'weather_detailed_moderate rain':0.66 , 'weather_detailed_heavy intensity rain':1}
+traffic_test["rain_strength_ordinal"] = traffic_test[['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain']].idxmax(axis=1).replace(scale_mapper)
+traffic_test.drop(columns=['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain'], inplace=True)
+
+scale_mapper = {'weather_detailed_light snow':0, 'weather_detailed_heavy snow':1}
+traffic_test["snow_strength_ordinal"] = traffic_test[['weather_detailed_light snow', 'weather_detailed_heavy snow']].idxmax(axis=1).replace(scale_mapper)
+traffic_test.drop(columns=['weather_detailed_light snow', 'weather_detailed_heavy snow'], inplace=True)
+
+y_best_model = pipeline_best_forrest.predict(traffic_test)
+
+#pd.DataFrame(y_best_model).to_csv("regression_SS.csv", header = None, index = None)
+```
+
+Expected value of **`MAPE`: 178%**
+
+## Classification
+
+Algorithms considered:
+
+* Random Forrest
+* **k-Nearest Neighbors Classifier**
+* Logistic Regression
+* Support Vector Classifier
+
+Algorithm selection:
+
+* Balancing data with SMOTE+Tomek (reduce recall, increase precision)
+* Manual Cross Validation parameter tuning
+* Out-of-sample accuracy comparision of various algorithms
+* **k-Nearest Neighbors Classifier with `n_neighbors=2`**
+
+
+## Classification
+
+```{python, echo = FALSE, message = FALSE}
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, accuracy_score, classification_report, roc_curve, auc, balanced_accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold, StratifiedKFold
+from sklearn.pipeline import make_pipeline
+
+import collections
+from collections import Counter
+
+from imblearn.pipeline import make_pipeline as make_pipeline
+from imblearn.combine import SMOTETomek
+from imblearn.under_sampling import TomekLinks
+from imblearn.metrics import classification_report_imbalanced
+import warnings
+warnings.filterwarnings("ignore")
+ 
+df = pd.read_csv("C:/Users/szymo/Desktop/Studia/Machine Learning I/Projekt/classification/data/drugs_train.csv")
+
+df.drop(columns=['id'], inplace = True)
+
+df['consumption_cocaine_last_month'] = df['consumption_cocaine_last_month'].map({'Yes': 1, 'No': 0})
+
+df.loc[df["education"] == "Left school at 17 years", "education"] = "Left school before 18 years"
+df.loc[df["education"] == "Left school at 16 years", "education"] = "Left school before 18 years"
+df.loc[df["education"] == "Left school before 16 years", "education"] = "Left school before 18 years"
+
+df.loc[df["country"] == "Canada", "country"] = "Other country"
+df.loc[df["country"] == "Ireland", "country"] = "Other country"
+
+df.loc[df["ethnicity"] == "Asian", "ethnicity"] = "Other"
+df.loc[df["ethnicity"] == "Black", "ethnicity"] = "Other"
+df.loc[df["ethnicity"] == "Other", "ethnicity"] = "Other"
+df.loc[df["ethnicity"] == "White", "ethnicity"] = "Other"
+df.loc[df["ethnicity"] == "Mixed-White/Asian", "ethnicity"] = "Other"
+df.loc[df["ethnicity"] == "Mixed-White/Black", "ethnicity"] = "Other"
+
+df.loc[df["consumption_alcohol"] == "never used", "consumption_alcohol"] = "more than year ago"
+df.loc[df["consumption_alcohol"] == "used in last decade", "consumption_alcohol"] = "more than year ago"
+df.loc[df["consumption_alcohol"] == "used over a decade ago", "consumption_alcohol"] = "more than year ago"
+
+df.loc[df["consumption_caffeine"] == "used in last decade", "consumption_caffeine"] = "more than month ago"
+df.loc[df["consumption_caffeine"] == "used over a decade ago", "consumption_caffeine"] = "more than month ago"
+df.loc[df["consumption_caffeine"] == "used in last year", "consumption_caffeine"] = "more than month ago"
+df.loc[df["consumption_caffeine"] == "never used", "consumption_caffeine"] = "more than month ago"
+
+df.loc[df["consumption_chocolate"] == "used in last decade", "consumption_chocolate"] = "more than month ago"
+df.loc[df["consumption_chocolate"] == "used over a decade ago", "consumption_chocolate"] = "more than month ago"
+df.loc[df["consumption_chocolate"] == "never used", "consumption_chocolate"] = "more than month ago"
+df.loc[df["consumption_chocolate"] == "used in last year", "consumption_chocolate"] = "more than month ago"
+
+df.loc[df["consumption_mushrooms"] == "used in last week", "consumption_mushrooms"] = "used recently"
+df.loc[df["consumption_mushrooms"] == "used in last day", "consumption_mushrooms"] = "used recently"
+
+df = pd.get_dummies(df, columns = ['age', 'gender', 'education', 'country', 'ethnicity','consumption_alcohol',
+       'consumption_amphetamines', 'consumption_caffeine',
+       'consumption_cannabis', 'consumption_chocolate',
+       'consumption_mushrooms', 'consumption_nicotine'])
+
+df['personality_neuroticism'] = df['personality_neuroticism']/100
+df['personality_extraversion'] = df['personality_extraversion']/100
+df['personality_openness'] = df['personality_openness'] / 100
+df['personality_agreeableness'] = df['personality_agreeableness']/100
+df['personality_conscientiousness'] = df['personality_conscientiousness']/100
+df['personality_impulsiveness'] = df['personality_impulsiveness']/100
+df['personality_sensation'] = df['personality_sensation'] /100
+#df['consumption_alcohol'] = df['consumption_alcohol']/100
+#df['consumption_amphetamines'] = df['consumption_amphetamines']/100
+#df['consumption_caffeine'] = df['consumption_caffeine']/100
+#df['consumption_cannabis'] = df['consumption_cannabis']/100
+#df['consumption_chocolate'] = df['consumption_chocolate']/100
+#df['consumption_mushrooms'] = df['consumption_mushrooms']/100
+#df['consumption_nicotine'] = df['consumption_nicotine']/100
+#df['consumption_cocaine_last_month'] =df['consumption_cocaine_last_month']/100
+
+features = df.columns
+target = 'consumption_cocaine_last_month'
+
+X = df.drop('consumption_cocaine_last_month', axis=1)
+y = df['consumption_cocaine_last_month']
+
+sKFold = StratifiedKFold(n_splits=5, random_state=None, shuffle=False)
+
+for train_index, test_index in sKFold.split(X, y):
+    orgXtrain, orgXtest = X.iloc[train_index], X.iloc[test_index]
+    orgytrain, orgytest = y.iloc[train_index], y.iloc[test_index]
+
+orgXtrain = orgXtrain.values
+orgXtest = orgXtest.values
+orgytrain = orgytrain.values
+orgytest = orgytest.values
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=2137)
+
+# Turn the values into an array for feeding the classification algorithms.
+X_train = X_train.values
+X_test = X_test.values
+y_train = y_train.values
+y_test = y_test.values
+```
+
+```{python}
+def CVTestKNNlass(nFolds = 6, randomState=2020, debug=False, features=features, *args, **kwargs):
+    kf = KFold(n_splits=nFolds, shuffle=True, random_state=randomState)
+    sKFold = StratifiedKFold(n_splits=4, random_state=None, shuffle=False)
+
+    # Lists to store the results
+    testResults = []
+    trainResults = []
+    predictions = []
+    indices = []
+
+    # Model validation on consecutive folds
+    for train, test in sKFold.split(X_train, y_train):
+        # Prepare the estimator
+        clf = make_pipeline(SMOTETomek(tomek=TomekLinks(sampling_strategy='majority')), KNeighborsClassifier(*args, **kwargs)) 
+        #clf = RandomForestRegressor(*args, **kwargs, random_state=randomState, n_jobs=-1)
+        if debug:
+            print(clf)
+        # Train the model
+        clf.fit(X_train[train], y_train[train])
+
+        predsTrain = clf.predict(X_train[train])
+        preds = clf.predict(X.iloc[test])
+        
+        # Save each fold predictions
+        predictions.append(preds.tolist().copy())
+        
+        # Store index for original dataset
+        #indices.append(df.iloc[test].index.tolist().copy())
+        
+        # Get MAPE score from each fold
+        trainScore = balanced_accuracy_score(y_train[train], predsTrain)
+        testScore = balanced_accuracy_score(y_train[test], preds)
+        
+        # Store Mape results to list  
+        trainResults.append(trainScore)
+        testResults.append(testScore)
+        
+        # Optionally, print results for each fold
+        if debug:
+            print("Train MAPE:", trainScore,
+                  "Valid MAPE:", testScore)
+        
+    return trainResults, testResults, predictions, indices
+```
+
+```{python}
+best_knn = KNeighborsClassifier(n_neighbors = 2)
+pipeline = make_pipeline(SMOTETomek(tomek=TomekLinks(sampling_strategy='majority')), best_knn)
+model = pipeline.fit(X_train, y_train)
+
+y_pred = best_knn.predict(orgXtest)
+score = balanced_accuracy_score(orgytest, y_pred)
+
+confu = confusion_matrix(orgytest, y_pred)
+#print(score)
+sns.heatmap(confu, annot=True)
+```
+
+Expected value of **`balanced accuracy`: 88%**
+
+```{python, message=FALSE, echo=FALSE}
+df_test = pd.read_csv("C:/Users/szymo/Desktop/Studia/Machine Learning I/Projekt/classification/data/drugs_test.csv")
+df_test.drop(columns=['id'], inplace = True)
+df_test.head()
+df_test.loc[df_test["education"] == "Left school at 17 years", "education"] = "Left school before 18 years"
+df_test.loc[df_test["education"] == "Left school at 16 years", "education"] = "Left school before 18 years"
+df_test.loc[df_test["education"] == "Left school before 16 years", "education"] = "Left school before 18 years"
+df_test.loc[df_test["country"] == "Canada", "country"] = "Other country"
+df_test.loc[df_test["country"] == "Ireland", "country"] = "Other country"
+df_test.loc[df_test["ethnicity"] == "Asian", "ethnicity"] = "Other"
+df_test.loc[df_test["ethnicity"] == "Black", "ethnicity"] = "Other"
+df_test.loc[df_test["ethnicity"] == "Other", "ethnicity"] = "Other"
+df_test.loc[df_test["ethnicity"] == "White", "ethnicity"] = "Other"
+df_test.loc[df_test["ethnicity"] == "Mixed-White/Asian", "ethnicity"] = "Other"
+df_test.loc[df_test["ethnicity"] == "Mixed-White/Black", "ethnicity"] = "Other"
+df_test.loc[df_test["consumption_alcohol"] == "never used", "consumption_alcohol"] = "more than year ago"
+df_test.loc[df_test["consumption_alcohol"] == "used in last decade", "consumption_alcohol"] = "more than year ago"
+df_test.loc[df_test["consumption_alcohol"] == "used over a decade ago", "consumption_alcohol"] = "more than year ago"
+df_test.loc[df_test["consumption_caffeine"] == "used in last decade", "consumption_caffeine"] = "more than month ago"
+df_test.loc[df_test["consumption_caffeine"] == "used over a decade ago", "consumption_caffeine"] = "more than month ago"
+df_test.loc[df_test["consumption_caffeine"] == "used in last year", "consumption_caffeine"] = "more than month ago"
+df_test.loc[df_test["consumption_caffeine"] == "never used", "consumption_caffeine"] = "more than month ago"
+df_test.loc[df_test["consumption_chocolate"] == "used in last decade", "consumption_chocolate"] = "more than month ago"
+df_test.loc[df_test["consumption_chocolate"] == "used over a decade ago", "consumption_chocolate"] = "more than month ago"
+df_test.loc[df_test["consumption_chocolate"] == "never used", "consumption_chocolate"] = "more than month ago"
+df_test.loc[df_test["consumption_chocolate"] == "used in last year", "consumption_chocolate"] = "more than month ago"
+df_test.loc[df_test["consumption_mushrooms"] == "used in last week", "consumption_mushrooms"] = "used recently"
+df_test.loc[df_test["consumption_mushrooms"] == "used in last day", "consumption_mushrooms"] = "used recently"
+df_test = pd.get_dummies(df_test, columns = ['age', 'gender', 'education', 'country', 'ethnicity','consumption_alcohol',
+       'consumption_amphetamines', 'consumption_caffeine',
+       'consumption_cannabis', 'consumption_chocolate',
+       'consumption_mushrooms', 'consumption_nicotine'])
+df_test['personality_neuroticism'] = df_test['personality_neuroticism']/100
+df_test['personality_extraversion'] = df_test['personality_extraversion']/100
+df_test['personality_openness'] = df_test['personality_openness'] / 100
+df_test['personality_agreeableness'] = df_test['personality_agreeableness']/100
+df_test['personality_conscientiousness'] = df_test['personality_conscientiousness']/100
+df_test['personality_impulsiveness'] = df_test['personality_impulsiveness']/100
+df_test['personality_sensation'] = df_test['personality_sensation'] /100
+```
+
+```{python, message=FALSE, echo=FALSE}
+best_knn.predict(df_test)
+
+submission = best_knn.predict(df_test)
+# pd.DataFrame(submission).to_csv("classification_SS.csv", header = None, index = None)
+```

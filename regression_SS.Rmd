@@ -1,0 +1,812 @@
+---
+title: "Traffic prediction - Regression"
+author: "Szymon Socha"
+output:
+  word_document: default
+  html_document: default
+---
+
+# Machine Learning 1 - Regression project
+
+In this project I am doing regression on weather data and making predictions on traffic. At the very beginning I do the data preparation. I clean them of outliers and prepare them for further prediction. To make predictions I use machine learning algorithms (Linear, Lasso, Ridge and Elastic Net Regression, Random Forrest, KNN regressor, SVM), compare their performance and make predictions on a test set.</br>
+The main task of the project is to make a prediction with the lowest possible prediction error as measured by MAPE (Mean Absolute Percentage Error).
+
+# Import libraries
+
+Let's begin with importing all necessary libraries
+
+```{python}
+import warnings
+warnings.filterwarnings("ignore")
+from  warnings import simplefilter
+from sklearn.exceptions import ConvergenceWarning
+
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+import seaborn as sns
+import matplotlib.pyplot as plt
+#%matplotlib inline
+
+from sklearn import linear_model
+from sklearn import metrics
+from sklearn import ensemble
+from sklearn.metrics import mean_squared_error, roc_auc_score, mean_absolute_percentage_error
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.model_selection import train_test_split, KFold, GridSearchCV
+```
+
+# Data preparation
+
+The dataset includes the following columns:
+- `date_time` – date and time (1 hourly interval)
+- `weather_general` – general short description of the current weather with the following levels: Clear, Clouds, Drizzle, Fog, Haze, Mist, Rain, Smoke, Snow, Squall, Thunderstorm
+- `weather_detailed` – more detailed description of the current weather with the following levels: broken clouds, drizzle, few clouds, fog, freezing rain, haze, heavy intensity drizzle, heavy intensity rain, heavy snow, light intensity drizzle, light intensity shower rain, light rain, light rain and snow, light shower snow, light snow, mist, moderate rain, overcast clouds, proximity shower rain, proximity thunderstorm, proximity thunderstorm with drizzle, proximity thunderstorm with rain, scattered clouds, shower drizzle, shower snow, sky is clear, sleet, smoke, snow, squalls, thunderstorm, thunderstorm with drizzle, thunderstorm with heavy rain, thunderstorm with light drizzle, thunderstorm with light rain, thunderstorm with rain, very heavy rain
+- `clouds_coverage` – percentage of sky covered by the clouds in the hourly interval
+- `temperature` – average temperature in the hourly interval (in Celsius degrees)
+- `rain_mm` – amount of rain that occurred in the hourly interval (in mm)
+- `snow_mm` – amount of snow that occurred in the hourly interval (in mm)
+- `traffic` – the amount of traffic in the hourly interval (outcome variable, only in the training sample)
+
+Import training dataset csv file
+
+```{python}
+traffic_train = pd.read_csv("data/traffic_train.csv")
+traffic_train = traffic_train.dropna()
+
+traffic_train = traffic_train[traffic_train.traffic != 0]
+traffic_train.shape
+```
+
+At the very beginning I decide to delete observations that are equal to 0. I consider them to be wrong. The initial dataset has 29685 observations and 8 variables.
+
+I also import a test dataset.
+
+```{python}
+traffic_test = pd.read_csv("data/traffic_test.csv")
+print(traffic_test["snow_mm"].describe())
+print(traffic_test["rain_mm"].describe())
+traffic_test.drop(columns=['snow_mm', 'rain_mm'], inplace = True)
+```
+
+I move on to analyse the variables and prepare the data. The distribution of the explanatory variable `traffic` which is the target seems to be correct.
+
+```{python}
+sns.histplot(data=traffic_train, x="traffic")
+```
+
+For `clouds_coverage_pct` I observe that values every 20 have the majority of observations. In later steps I combine the values between to rounded levels of every 20.
+
+```{python}
+sns.histplot(data=traffic_train, x="clouds_coverage_pct")
+```
+
+For `temperature` I observe that there are outliers. I remove them in a later step.
+
+```{python}
+sns.histplot(data=traffic_train, x="temperature")
+```
+
+I draw a `target` chart for the first 168 observations (equivalent to one week). I see very strong daily seasonality. Two days seem to be smaller than the others, they are weekends. A correct transformation of the `date_time` variable will be crucial for the accuracy of the subsequent prediction.
+
+```{python}
+plt.figure()
+traffic_train[["date_time", "traffic"]].head(168).plot()
+plt.show()
+```
+
+Based on the observations made, I am removing all observations of temperatures below -50 degrees. I note that the columns `snow_mm`, `rain_mm` are redundant (in the test set all observations have a value of 0 for these variables). Further, as I said seasonality will be key with this data. Based on the `date_time` variable I create a numeric variable `month` (1-12), `hour` (0-23), `is_weekend` (dummy variable for weekend), `weekday` (1-7 for weekday).
+
+```{python}
+traffic_train = traffic_train[traffic_train.temperature > -50]
+
+traffic_train = traffic_train[traffic_train.snow_mm == 0]
+traffic_train = traffic_train[traffic_train.rain_mm == 0]
+traffic_train.drop(columns=['snow_mm', 'rain_mm'], inplace = True)
+
+#traffic_train = traffic_train[traffic_train.rain_mm < 60]
+#traffic_train['log_rain_mm'] = np.log(traffic_train.rain_mm+1)
+#traffic_train = traffic_train[traffic_train.snow_mm < 120]
+#traffic_train['log_snow_mm'] = np.log(traffic_train.snow_mm+1)
+
+#traffic_train['year'] = pd.to_datetime(traffic_train['date_time']).dt.year
+traffic_train['month'] = pd.to_datetime(traffic_train['date_time']).dt.month
+traffic_train['hour'] = pd.to_datetime(traffic_train['date_time']).dt.hour
+traffic_train["is_weekend"] = pd.to_datetime(traffic_train['date_time']).dt.dayofweek > 5
+traffic_train['weekday'] = pd.to_datetime(traffic_train['date_time']).dt.dayofweek
+#traffic_train = pd.get_dummies(traffic_train, columns=['weather_general', 'weather_detailed', 'year', 'month'])
+```
+
+In addition, I group the hours by time of day `Night`, `Morning`, `Noon`, `Evening`. I also combine the mentioned `clouds_coverage_pct` into levels every 20.
+
+```{python}
+traffic_train['part_of_day'] = pd.cut(traffic_train['hour'], bins=[0,4,7,13,19,24], labels=['Night', 'Morning','Noon','Evening', 'Night'], include_lowest=True, ordered=False)
+traffic_train['clouds_coverage_pct'] = pd.cut(x=traffic_train['clouds_coverage_pct'], bins=[-1,10,30,50,70,90,100], labels=[0, 20, 40, 60, 80, 100])
+```
+
+I create dummy variables.
+
+```{python}
+traffic_train = pd.get_dummies(traffic_train, columns=['weather_general', 'weather_detailed', 'month', 'hour', 'is_weekend', 'weekday', 'part_of_day'])
+```
+
+I think the variables responsible for the weather details are too detailed. I arbitrarily combine them into larger, more generalised variables.
+
+```{python}
+traffic_train["weather_general_Clouds"] = traffic_train["weather_general_Clouds"] + traffic_train["weather_general_Squall"]
+traffic_train.drop(columns=["weather_general_Squall"], inplace=True)
+
+traffic_train["weather_general_Clouds"] = traffic_train["weather_general_Clouds"] + traffic_train['weather_detailed_squalls']
+traffic_train.drop(columns=['weather_detailed_squalls'], inplace=True)
+
+traffic_train["weather_general_Fog"] = traffic_train["weather_general_Fog"] + traffic_train["weather_general_Smoke"]
+traffic_train.drop(columns=["weather_general_Smoke"], inplace=True)
+
+
+traffic_train["weather_detailed_drizzle"] = traffic_train["weather_detailed_drizzle"] + traffic_train["weather_detailed_heavy intensity drizzle"]
+traffic_train.drop(columns=["weather_detailed_heavy intensity drizzle"], inplace=True)
+
+traffic_train["weather_detailed_drizzle"] = traffic_train["weather_detailed_drizzle"] + traffic_train["weather_detailed_shower drizzle"]
+traffic_train.drop(columns=["weather_detailed_shower drizzle"], inplace=True)
+
+traffic_train["weather_detailed_drizzle"] = traffic_train["weather_detailed_drizzle"] + traffic_train['weather_detailed_light intensity drizzle']
+traffic_train.drop(columns=['weather_detailed_light intensity drizzle'], inplace=True)
+
+traffic_train["weather_detailed_light rain"] = traffic_train["weather_detailed_light rain"] + traffic_train["weather_detailed_light rain and snow"]
+traffic_train.drop(columns=["weather_detailed_light rain and snow"], inplace=True)
+
+traffic_train["weather_detailed_light rain"] = traffic_train["weather_detailed_light rain"] + traffic_train['weather_detailed_proximity shower rain']
+traffic_train.drop(columns=['weather_detailed_proximity shower rain'], inplace=True)
+
+traffic_train["weather_detailed_moderate rain"] = traffic_train["weather_detailed_moderate rain"] + traffic_train['weather_detailed_freezing rain']
+traffic_train.drop(columns=['weather_detailed_freezing rain'], inplace=True)
+
+
+traffic_train["weather_detailed_thunderstorm with rain"] = traffic_train["weather_detailed_thunderstorm with rain"] + traffic_train["weather_detailed_thunderstorm with light drizzle"]
+traffic_train.drop(columns=["weather_detailed_thunderstorm with light drizzle"], inplace=True)
+
+
+traffic_train["weather_detailed_light snow"] = traffic_train["weather_detailed_light snow"] + traffic_train["weather_detailed_light shower snow"]
+traffic_train.drop(columns=["weather_detailed_light shower snow"], inplace=True)
+
+traffic_train["weather_detailed_light snow"] = traffic_train["weather_detailed_light rain"] + traffic_train["weather_detailed_shower snow"]
+traffic_train.drop(columns=["weather_detailed_shower snow"], inplace=True)
+
+traffic_train["weather_detailed_snow"] = traffic_train["weather_detailed_snow"] + traffic_train["weather_detailed_sleet"]
+traffic_train.drop(columns=["weather_detailed_sleet"], inplace=True)
+
+
+
+traffic_train["weather_detailed_proximity thunderstorm"] = traffic_train["weather_detailed_proximity thunderstorm"] + traffic_train["weather_detailed_proximity thunderstorm with drizzle"]
+traffic_train.drop(columns=["weather_detailed_proximity thunderstorm with drizzle"], inplace=True)
+
+traffic_train["weather_detailed_proximity thunderstorm"] = traffic_train["weather_detailed_proximity thunderstorm"] + traffic_train["weather_detailed_proximity thunderstorm with rain"]
+traffic_train.drop(columns=["weather_detailed_proximity thunderstorm with rain"], inplace=True)
+
+traffic_train["weather_detailed_thunderstorm"] = traffic_train["weather_detailed_thunderstorm"] + traffic_train["weather_detailed_thunderstorm with heavy rain"] + traffic_train["weather_detailed_thunderstorm with light rain"] + traffic_train["weather_detailed_thunderstorm with rain"]
+traffic_train.drop(columns=["weather_detailed_thunderstorm with heavy rain", "weather_detailed_thunderstorm with light rain", "weather_detailed_thunderstorm with rain"], inplace=True)
+
+
+traffic_train["weather_detailed_fog"] = traffic_train["weather_detailed_fog"] + traffic_train["weather_detailed_smoke"]
+traffic_train.drop(columns=["weather_detailed_smoke"], inplace=True)
+```
+
+In the next step, I check the correlations and decide whether I can remove the various weather levels.
+
+```{python}
+CrosstabResult=pd.crosstab(index=traffic_train["weather_detailed_fog"],columns=traffic_train["weather_general_Fog"])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train["weather_detailed_snow"],columns=traffic_train["weather_general_Snow"])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train["weather_detailed_snow"],columns=traffic_train["weather_general_Snow"])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train['weather_general_Thunderstorm'],columns=traffic_train['weather_detailed_thunderstorm'])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train['weather_general_Mist'],columns=traffic_train['weather_detailed_mist'])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train['weather_general_Drizzle'],columns=traffic_train['weather_detailed_drizzle'])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train['weather_general_Haze'],columns=traffic_train['weather_detailed_haze'])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+print("")
+CrosstabResult=pd.crosstab(index=traffic_train['weather_general_Thunderstorm'],columns=traffic_train['weather_detailed_proximity thunderstorm'])
+print(CrosstabResult)
+from scipy.stats import chi2_contingency
+ChiSqResult = chi2_contingency(CrosstabResult)
+print('The P-Value of the ChiSq Test is:', ChiSqResult[1])
+```
+
+I am removing unnecessary columns.
+
+```{python}
+traffic_train.drop(columns=['weather_detailed_fog', 'weather_detailed_snow', 'weather_detailed_thunderstorm', 'weather_detailed_mist', 'weather_detailed_drizzle', 'weather_detailed_haze', 'weather_detailed_proximity thunderstorm'], inplace=True)
+```
+
+I decode oridinal variables into the strength of a given weather phenomenon (scaled from 0 to 1).
+
+```{python}
+# Ordinal sky
+scale_mapper = {'weather_detailed_sky is clear':0, 'weather_detailed_broken clouds':0.25, 'weather_detailed_few clouds':0.5 , 'weather_detailed_scattered clouds':0.75 , 'weather_detailed_overcast clouds':1}
+traffic_train["clear_sky_ordinal"] = traffic_train[['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds']].idxmax(axis=1).replace(scale_mapper)
+traffic_train.drop(columns=['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds'], inplace=True)
+
+# Ordinal rain
+scale_mapper = {'weather_detailed_light intensity shower rain':0, 'weather_detailed_light rain':0.33 , 'weather_detailed_moderate rain':0.66 , 'weather_detailed_heavy intensity rain':1}
+traffic_train["rain_strength_ordinal"] = traffic_train[['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain']].idxmax(axis=1).replace(scale_mapper)
+traffic_train.drop(columns=['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain'], inplace=True)
+
+# Ordinal snow
+scale_mapper = {'weather_detailed_light snow':0, 'weather_detailed_heavy snow':1}
+traffic_train["snow_strength_ordinal"] = traffic_train[['weather_detailed_light snow', 'weather_detailed_heavy snow']].idxmax(axis=1).replace(scale_mapper)
+traffic_train.drop(columns=['weather_detailed_light snow', 'weather_detailed_heavy snow'], inplace=True)
+```
+
+I am correcting the values created when adding columns.
+
+```{python}
+traffic_train.loc[traffic_train['weather_general_Clear'] > 1, 'weather_general_Clear'] = 1
+traffic_train.loc[traffic_train['weather_general_Clouds'] > 1, 'weather_general_Clouds'] = 1
+traffic_train.loc[traffic_train['weather_general_Drizzle'] > 1, 'weather_general_Drizzle'] = 1
+traffic_train.loc[traffic_train['weather_general_Fog'] > 1, 'weather_general_Fog'] = 1
+traffic_train.loc[traffic_train['weather_general_Haze'] > 1, 'weather_general_Haze'] = 1
+traffic_train.loc[traffic_train['weather_general_Mist'] > 1, 'weather_general_Mist'] = 1
+traffic_train.loc[traffic_train['weather_general_Rain'] > 1, 'weather_general_Rain'] = 1
+traffic_train.loc[traffic_train['weather_general_Snow'] > 1, 'weather_general_Snow'] = 1
+traffic_train.loc[traffic_train['weather_general_Thunderstorm'] > 1, 'weather_general_Thunderstorm'] = 1
+```
+
+I save the explanatory variables into a list.
+
+```{python}
+features = traffic_train.columns.drop(['date_time','traffic'])
+features
+```
+
+As this is data sorted by time, the best way would be to manually split the data into a training set and a test set. This way I will be able to check the model performance on actually new data (without risking potential data leakage due to autocorrelation).
+
+```{python}
+df = traffic_train[:21000]
+target = "traffic"
+df.shape
+```
+
+```{python}
+x_train = traffic_train[:21000][features]
+x_test = traffic_train[21001:][features]
+y_train = traffic_train[:21000][target]
+y_test = traffic_train[21001:][target]
+```
+
+## Linear Regression, Lasso, Ridge, Elastic Net
+
+```{python}
+# Linear wrapper
+def CVLinearReg(nFolds = 5, randomState=2022, method = "linear", features=features, *args, **kwargs):
+    
+    kf = KFold(n_splits=nFolds, shuffle=True, random_state=randomState)
+    
+    # Lists to store the results
+    testResults = []
+    trainResults = []
+    predictions = []
+    indices = []
+    
+    # Model validation on consecutive folds
+    for train, test in kf.split(df.index.values):
+        
+        algorithm = {
+        "linear":linear_model.LinearRegression,
+        "lasso":linear_model.Lasso,
+        "ridge":linear_model.Ridge,
+        "elastic":linear_model.ElasticNet
+        }
+        
+        # Prepare the estimator
+        clf = Pipeline([('scaler', RobustScaler()), ('algo', algorithm[method](*args, **kwargs))])
+
+        # Train the mode
+        clf.fit(df.iloc[train][features], df.iloc[train][target])
+        
+        predsTrain = clf.predict(df.iloc[train][features])
+        preds = clf.predict(df.iloc[test][features])
+        # Save each fold predictions
+        predictions.append(preds.tolist().copy())
+        # Store index for original dataset
+        indices.append(df.iloc[test].index.tolist().copy())
+        # Get MAPE score from each fold
+        trainScore = mean_absolute_percentage_error(df[target].iloc[train], predsTrain)
+        testScore = mean_absolute_percentage_error(df[target].iloc[test], preds)
+        # Store Mape results to list 
+        trainResults.append(trainScore)
+        testResults.append(testScore)
+
+    return trainResults, testResults, predictions, indices
+```
+
+```{python}
+trainResults, testResults, predictions, indices = CVLinearReg(method="linear")
+print("LINEAR: ", np.mean(trainResults), np.mean(testResults))
+trainResults, testResults, predictions, indices = CVLinearReg(method="lasso")
+print("LASSO: ", np.mean(trainResults), np.mean(testResults))
+trainResults, testResults, predictions, indices = CVLinearReg(method="ridge")
+print("RIDGE: ", np.mean(trainResults), np.mean(testResults))
+trainResults, testResults, predictions, indices = CVLinearReg(method="elastic")
+print("ELASTIC: ", np.mean(trainResults), np.mean(testResults))
+```
+
+```{python}
+for k in np.arange(0, 0.5, 0.05):
+    trainResults, testResults, predictions, indices = CVLinearReg(method="lasso", alpha=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+```{python}
+for k in np.arange(0, 1, 0.1):
+    trainResults, testResults, predictions, indices = CVLinearReg(method="ridge", alpha=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+```{python}
+for k in np.arange(0, 0.3, 0.05):
+    trainResults, testResults, predictions, indices = CVLinearReg(method="elastic", alpha=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+```{python}
+for k in np.arange(0, 1, 0.1):
+    trainResults, testResults, predictions, indices = CVLinearReg(method="elastic", alpha=0.05, l1_ratio=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+For each algorithm I iterate through the parameters. No overfitting but bad overall performance.
+
+Best results for Ridge and `alpha=0.2`. For the found model I do an out-of-sample prediction.
+
+```{python}
+pipeline_best_linear = Pipeline([("scaler", RobustScaler()), ("classifier",linear_model.Ridge(alpha=0.2))])
+pipeline_best_linear.fit(x_train, y_train)
+y_best_linear = pipeline_best_linear.predict(x_test)
+
+print(f'MAPE\ntraining: {round(mean_absolute_percentage_error(y_train, pipeline_best_linear.predict(x_train)) * 100, 4)}%\ntest (out-of-sample): {round(mean_absolute_percentage_error(y_test, y_best_linear) * 100, 4)}%')
+```
+
+```{python}
+# from sklearn.linear_model import Ridge
+# pipline_ridge = Pipeline([("scaler", RobustScaler()),
+#                         ("classifier",Ridge())])
+
+# param_grid = {'classifier__alpha':np.arange(0, 0.5, 0.02)}
+# #forest_reg = RandomForestRegressor(random_state=997)
+# # przeprowadza proces uczenia na pięciu podzbiorach, czyli łącznie (12+6)*5=90 przebiegów 
+
+
+# grid_search = GridSearchCV(pipline_ridge, param_grid, cv=5,
+#                            scoring='neg_mean_absolute_percentage_error',
+#                            return_train_score=True)
+# grid_search.fit(x_train, y_train)
+
+# best_ridge = grid_search.best_estimator_ #RandomForestRegressor(bootstrap=False, max_features=3, n_estimators=3, random_state=42)
+# best_ridge.fit(x_train, y_train)
+# y_ridge = best_ridge.predict(x_train)
+
+# print(f'MAPE:\ntraining: {round(mean_absolute_percentage_error(y_train, y_ridge) * 100, 4)}%, test: {round(mean_absolute_percentage_error(y_test, best_ridge.predict(x_test)) * 100, 4)}%')
+```
+
+## Random Forrest Regressor
+
+```{python}
+# Random Forrest Regressor
+def CVTestRFRegress(nFolds = 6, randomState=2020, debug=False, features=features, *args, **kwargs):
+    kf = KFold(n_splits=nFolds, shuffle=True, random_state=randomState)
+    
+    # Lists to store the results
+    testResults = []
+    trainResults = []
+    predictions = []
+    indices = []
+
+    # Model validation on consecutive folds
+    for train, test in kf.split(df.index.values):
+        # Prepare the estimator
+        clf = Pipeline([("scaler", RobustScaler()), ("classifier",RandomForestRegressor(*args, **kwargs, random_state=randomState))])
+        #clf = RandomForestRegressor(*args, **kwargs, random_state=randomState, n_jobs=-1)
+        if debug:
+            print(clf)
+        # Train the model
+        clf.fit(df.iloc[train][features], df.iloc[train][target])
+
+        predsTrain = clf.predict(df.iloc[train][features])
+        preds = clf.predict(df.iloc[test][features])
+        
+        # Save each fold predictions
+        predictions.append(preds.tolist().copy())
+        
+        # Store index for original dataset
+        indices.append(df.iloc[test].index.tolist().copy())
+        
+        # Get MAPE score from each fold
+        trainScore = mean_absolute_percentage_error(df[target].iloc[train], predsTrain)
+        testScore = mean_absolute_percentage_error(df[target].iloc[test], preds)
+        
+        # Store Mape results to list  
+        trainResults.append(trainScore)
+        testResults.append(testScore)
+        
+        # Optionally, print results for each fold
+        if debug:
+            print("Train MAPE:", trainScore,
+                  "Valid MAPE:", testScore)
+        
+    return trainResults, testResults, predictions, indices
+```
+
+```{python}
+trainResults, testResults, predictions, indices = CVTestRFRegress()
+print(np.mean(trainResults), np.mean(testResults))
+```
+
+Right from the start I can see that Random Forrest is doing better than Regression. However, I observe a slight overfitting.
+
+I then iterate over more parameters to tune the hyperparameters.
+
+```{python}
+for k in range(20, 50,10):
+    trainResults, testResults, predictions, indices = CVTestRFRegress(n_estimators=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+The more trees the better.
+
+```{python}
+for k in range(20, 50, 2):
+    trainResults, testResults, predictions, indices = CVTestRFRegress(n_estimators=30, max_features=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+Best result for `max_features=38`.
+
+```{python}
+for k in range(15, 30, 2):
+    trainResults, testResults, predictions, indices = CVTestRFRegress(n_estimators=30, max_features=38, min_samples_split=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+Best `min_samples_split` for 19. Changing this parameter helps a lot with overfitting.
+
+```{python}
+for k in range(10, 50, 5):
+    trainResults, testResults, predictions, indices = CVTestRFRegress(n_estimators=30, max_features=38, min_samples_split=19, max_depth=k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+Best `max_depth` for 35.
+
+```{python}
+for k in range(1, 15, 2):
+    trainResults, testResults, predictions, indices = CVTestRFRegress(n_estimators=30, max_features=38, min_samples_split=19, max_depth=35, min_samples_leaf = k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+Best `min_samples_leaf` for 3.
+
+I then train the tuned model on the whole set and make a prediction on the out-of-sample data.
+
+```{python}
+pipeline_best_forrest = Pipeline([("scaler", RobustScaler()), ("classifier",RandomForestRegressor(n_estimators=1000, max_features=38, min_samples_split=19, max_depth=35, min_samples_leaf = 3, random_state=2137))])
+
+pipeline_best_forrest.fit(x_train, y_train)
+y_best_forrest = pipeline_best_forrest.predict(x_test)
+
+print(f'MAPE\ntraining: {round(mean_absolute_percentage_error(y_train, pipeline_best_forrest.predict(x_train)) * 100, 4)}%\ntest (out-of-sample): {round(mean_absolute_percentage_error(y_test, y_best_forrest) * 100, 4)}%')
+```
+
+I also do an automatic search for parameters using the GridSearch method.
+
+```{python}
+pipline_forest = Pipeline([("scaler", RobustScaler()), ("classifier",RandomForestRegressor(random_state=997))])
+
+param_grid = {'classifier__n_estimators': [4, 6, 9], 
+              'classifier__max_features': ['log2', 'sqrt','auto'],
+              'classifier__max_depth': [2, 3, 5, 10], 
+              'classifier__min_samples_split': [2, 3, 5],
+              'classifier__min_samples_leaf': [1,5,8]}
+
+#forest_reg = RandomForestRegressor(random_state=997)
+# przeprowadza proces uczenia na pięciu podzbiorach, czyli łącznie (12+6)*5=90 przebiegów 
+grid_search = GridSearchCV(pipline_forest, param_grid, cv=10)
+grid_search.fit(x_train, y_train)
+
+best_forest = grid_search.best_estimator_ #RandomForestRegressor(bootstrap=False, max_features=3, n_estimators=3, random_state=42)
+best_forest.fit(x_train, y_train)
+y_forest = best_forest.predict(x_train)
+
+print(f'MAPE:\ntraining: {round(mean_absolute_percentage_error(y_train, y_forest) * 100, 4)}%, test: {round(mean_absolute_percentage_error(y_test, best_forest.predict(x_test)) * 100, 4)}%')
+```
+
+Prediction of hyperparameters obtained with GridSearch is weaker than that obtained manually.
+
+### Out-Of-Sample
+
+Let's see how RandomForrest handles prediction on brand new (out-of-sample) data.
+
+Let's plot real values first.
+
+```{python}
+import matplotlib.pyplot as plt
+plt.plot(y_test[800:1000])
+```
+
+Then, let's plot predicted values.
+
+```{python}
+plt.plot(y_best_forrest[800:1000])
+```
+
+**I can observe that predictions are very accurate!** All the highs and lows on the chart are well captured. Also captured is the smaller movement on weekends.
+
+### KNN REGRESSOR
+
+```{python}
+# KNN regressor wrapper
+def CVTestKNNRegress(nFolds = 6, randomState=2137, debug=False, features=features, *args, **kwargs):
+    kf = KFold(n_splits=nFolds, shuffle=True, random_state=randomState)
+
+    # Lists to store the results
+    testResults = []
+    trainResults = []
+    predictions = []
+    indices = []
+
+    # Model validation on consecutive folds
+    for train, test in kf.split(df.index.values):
+        # Prepare the estimator
+        clf = Pipeline([("scaler", RobustScaler()), ("classifier", KNeighborsRegressor(*args, **kwargs))])
+        #clf = make_pipeline(RobustScaler(), KNeighborsRegressor(*args, **kwargs, n_jobs=-1))
+        #clf = KNeighborsRegressor(*args, **kwargs, random_state=randomState, n_jobs=-1)
+        if debug:
+            print(clf)
+        # Train the model
+        clf.fit(df.iloc[train][features], df.iloc[train][target])
+
+        predsTrain = clf.predict(df.iloc[train][features])
+        preds = clf.predict(df.iloc[test][features])
+        
+        # Save each fold predictions
+        predictions.append(preds.tolist().copy())
+        
+        # Store index for original dataset
+        indices.append(df.iloc[test].index.tolist().copy())
+        
+        # Get MAPE score from each fold
+        trainScore = mean_absolute_percentage_error(df[target].iloc[train], predsTrain)
+        testScore = mean_absolute_percentage_error(df[target].iloc[test], preds)
+
+        # Store Mape results to list 
+        trainResults.append(trainScore)
+        testResults.append(testScore)
+        
+        # Optionally, print results for each fold
+        if debug:
+            print("Train MAPE:", trainScore,
+                  "Valid MAPE:", testScore)
+        
+    return trainResults, testResults, predictions, indices
+```
+
+```{python}
+for k in range(2, 7, 1):
+    trainResults, testResults, predictions, indices = CVTestKNNRegress(n_neighbors = k)
+    print(k, np.mean(trainResults), np.mean(testResults))
+```
+
+The smallest overfitting and best performance for the 4 nearest neighbours. But bad performance overall.
+
+```{python}
+pipeline_best_knn = Pipeline([("scaler", RobustScaler()), ("classifier",KNeighborsRegressor(n_neighbors = 4))])
+
+pipeline_best_knn.fit(x_train, y_train)
+y_best_knn = pipeline_best_forrest.predict(x_test)
+
+print(f'MAPE\ntraining: {round(mean_absolute_percentage_error(y_train, pipeline_best_knn.predict(x_train)) * 100, 4)}%\ntest: {round(mean_absolute_percentage_error(y_test, y_best_knn) * 100, 4)}%')
+```
+
+On out-of-sample collection quite good results but still weaker than Random Forrest.
+
+```{python}
+from sklearn.neighbors import KNeighborsRegressor
+pipline_knn = Pipeline([("scaler", RobustScaler()),
+                        ("classifier",KNeighborsRegressor())])
+
+
+param_grid = {"classifier__n_neighbors": range(4, 7)}
+
+grid_search = GridSearchCV(pipline_knn, param_grid, cv=5,
+                           return_train_score=True)
+grid_search.fit(x_train, y_train)
+
+best_knn = grid_search.best_estimator_
+best_knn.fit(x_train, y_train)
+y_knn = best_knn.predict(x_train)
+
+print(f'MAPE:\ntraining: {round(mean_absolute_percentage_error(y_train, y_knn) * 100, 4)}%, test: {round(mean_absolute_percentage_error(y_test, best_knn.predict(x_test)) * 100, 4)}%')
+```
+
+GridSearch indicated that the best model was that for the 7 nearest neighbours. However, its performance on the out-of-sample set is very poor.
+
+## SVM
+
+```{python}
+# SVM wrapper
+def CVTestSVMRegress(nFolds = 6, randomState=2137, debug=False, features=features, *args, **kwargs):
+    kf = KFold(n_splits=nFolds, shuffle=True, random_state=randomState)
+
+    # Lists to store the results
+    testResults = []
+    trainResults = []
+    predictions = []
+    indices = []
+
+    # Model validation on consecutive folds
+    for train, test in kf.split(df.index.values):
+        # Prepare the estimator
+        clf = Pipeline([("scaler", RobustScaler()), ("classifier", SVR(*args, **kwargs))])
+        
+        if debug:
+            print(clf)
+        # Train the model
+        clf.fit(df.iloc[train][features], df.iloc[train][target])
+
+        predsTrain = clf.predict(df.iloc[train][features])
+        preds = clf.predict(df.iloc[test][features])
+        
+        # Save each fold predictions
+        predictions.append(preds.tolist().copy())
+        
+        # Store index for original dataset
+        indices.append(df.iloc[test].index.tolist().copy())
+        
+        # Get MAPE score from each fold
+        trainScore = mean_absolute_percentage_error(df[target].iloc[train], predsTrain)
+        testScore = mean_absolute_percentage_error(df[target].iloc[test], preds)
+
+        # Store Mape results to list 
+        trainResults.append(trainScore)
+        testResults.append(testScore)
+        
+        # Optionally, print results for each fold
+        if debug:
+            print("Train MAPE:", trainScore,
+                  "Valid MAPE:", testScore)
+        
+    return trainResults, testResults, predictions, indices
+```
+
+```{python}
+trainResults, testResults, predictions, indices = CVTestSVMRegress()
+print(np.mean(trainResults), np.mean(testResults))
+```
+
+Very bad performance and long time of fitting. I won't continue with tunning the parameters
+
+# Test dataset predictions
+
+At the very end it remains to make a prediction on the test set. Before that, I have to make the same modifications on the test set as I did on the training set.
+
+```{python}
+traffic_test = pd.read_csv("data/traffic_test.csv")
+
+traffic_test.drop(columns=['snow_mm', 'rain_mm'], inplace = True)
+traffic_test = traffic_test[traffic_test.temperature > -50]
+
+traffic_test['month'] = pd.to_datetime(traffic_test['date_time']).dt.month
+traffic_test['hour'] = pd.to_datetime(traffic_test['date_time']).dt.hour
+traffic_test["is_weekend"] = pd.to_datetime(traffic_test['date_time']).dt.dayofweek > 5
+traffic_test['weekday'] = pd.to_datetime(traffic_test['date_time']).dt.dayofweek
+traffic_test.drop(columns=['date_time'], inplace = True)
+
+traffic_test['part_of_day'] = pd.cut(traffic_test['hour'], bins=[0,4,7,13,19,24], labels=['Night', 'Morning','Noon','Evening', 'Night'], include_lowest=True, ordered=False)
+traffic_test['clouds_coverage_pct'] = pd.cut(x=traffic_test['clouds_coverage_pct'], bins=[-1,10,30,50,70,90,100], labels=[0, 20, 40, 60, 80, 100])
+
+traffic_test = pd.get_dummies(traffic_test, columns=['weather_general', 'weather_detailed', 'month', 'hour', 'is_weekend', 'weekday', 'part_of_day'])
+
+traffic_test["weather_general_Fog"] = traffic_test["weather_general_Fog"] + traffic_test["weather_general_Smoke"]
+traffic_test.drop(columns=["weather_general_Smoke"], inplace=True)
+
+
+traffic_test["weather_detailed_drizzle"] = traffic_test["weather_detailed_drizzle"] + traffic_test["weather_detailed_heavy intensity drizzle"]
+traffic_test.drop(columns=["weather_detailed_heavy intensity drizzle"], inplace=True)
+
+traffic_test["weather_detailed_drizzle"] = traffic_test["weather_detailed_drizzle"] + traffic_test["weather_detailed_shower drizzle"]
+traffic_test.drop(columns=["weather_detailed_shower drizzle"], inplace=True)
+
+traffic_test["weather_detailed_drizzle"] = traffic_test["weather_detailed_drizzle"] + traffic_test['weather_detailed_light intensity drizzle']
+traffic_test.drop(columns=['weather_detailed_light intensity drizzle'], inplace=True)
+
+traffic_test["weather_detailed_light rain"] = traffic_test["weather_detailed_light rain"] + traffic_test["weather_detailed_light rain and snow"]
+traffic_test.drop(columns=["weather_detailed_light rain and snow"], inplace=True)
+
+traffic_test["weather_detailed_light rain"] = traffic_test["weather_detailed_light rain"] + traffic_test['weather_detailed_proximity shower rain']
+traffic_test.drop(columns=['weather_detailed_proximity shower rain'], inplace=True)
+
+traffic_test["weather_detailed_thunderstorm with rain"] = traffic_test["weather_detailed_thunderstorm with rain"] + traffic_test["weather_detailed_thunderstorm with light drizzle"]
+traffic_test.drop(columns=["weather_detailed_thunderstorm with light drizzle"], inplace=True)
+
+
+traffic_test["weather_detailed_light snow"] = traffic_test["weather_detailed_light snow"] + traffic_test["weather_detailed_light shower snow"]
+traffic_test.drop(columns=["weather_detailed_light shower snow"], inplace=True)
+
+traffic_test["weather_detailed_snow"] = traffic_test["weather_detailed_snow"] + traffic_test["weather_detailed_sleet"]
+traffic_test.drop(columns=["weather_detailed_sleet"], inplace=True)
+
+traffic_test["weather_detailed_proximity thunderstorm"] = traffic_test["weather_detailed_proximity thunderstorm"] + traffic_test["weather_detailed_proximity thunderstorm with drizzle"]
+traffic_test.drop(columns=["weather_detailed_proximity thunderstorm with drizzle"], inplace=True)
+
+traffic_test["weather_detailed_proximity thunderstorm"] = traffic_test["weather_detailed_proximity thunderstorm"] + traffic_test["weather_detailed_proximity thunderstorm with rain"]
+traffic_test.drop(columns=["weather_detailed_proximity thunderstorm with rain"], inplace=True)
+
+traffic_test["weather_detailed_thunderstorm"] = traffic_test["weather_detailed_thunderstorm"] + traffic_test["weather_detailed_thunderstorm with heavy rain"] + traffic_test["weather_detailed_thunderstorm with light rain"] + traffic_test["weather_detailed_thunderstorm with rain"]
+traffic_test.drop(columns=["weather_detailed_thunderstorm with heavy rain", "weather_detailed_thunderstorm with light rain", "weather_detailed_thunderstorm with rain"], inplace=True)
+
+traffic_test["weather_detailed_fog"] = traffic_test["weather_detailed_fog"] + traffic_test["weather_detailed_smoke"]
+traffic_test.drop(columns=["weather_detailed_smoke"], inplace=True)
+
+traffic_test.drop(columns=['weather_detailed_fog', 'weather_detailed_snow', 'weather_detailed_thunderstorm', 'weather_detailed_mist', 'weather_detailed_drizzle', 'weather_detailed_haze', 'weather_detailed_proximity thunderstorm'], inplace=True)
+
+scale_mapper = {'weather_detailed_sky is clear':0, 'weather_detailed_broken clouds':0.25, 'weather_detailed_few clouds':0.5 , 'weather_detailed_scattered clouds':0.75 , 'weather_detailed_overcast clouds':1}
+traffic_test["clear_sky_ordinal"] = traffic_test[['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds']].idxmax(axis=1).replace(scale_mapper)
+traffic_test.drop(columns=['weather_detailed_sky is clear', 'weather_detailed_broken clouds', 'weather_detailed_few clouds', 'weather_detailed_scattered clouds', 'weather_detailed_overcast clouds'], inplace=True)
+
+scale_mapper = {'weather_detailed_light intensity shower rain':0, 'weather_detailed_light rain':0.33 , 'weather_detailed_moderate rain':0.66 , 'weather_detailed_heavy intensity rain':1}
+traffic_test["rain_strength_ordinal"] = traffic_test[['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain']].idxmax(axis=1).replace(scale_mapper)
+traffic_test.drop(columns=['weather_detailed_light intensity shower rain', 'weather_detailed_light rain', 'weather_detailed_moderate rain', 'weather_detailed_heavy intensity rain'], inplace=True)
+
+scale_mapper = {'weather_detailed_light snow':0, 'weather_detailed_heavy snow':1}
+traffic_test["snow_strength_ordinal"] = traffic_test[['weather_detailed_light snow', 'weather_detailed_heavy snow']].idxmax(axis=1).replace(scale_mapper)
+traffic_test.drop(columns=['weather_detailed_light snow', 'weather_detailed_heavy snow'], inplace=True)
+```
+
+```{python}
+y_best_model = pipeline_best_forrest.predict(traffic_test)
+```
+
+I save the predictions to a CSV file.
+
+```{python}
+#pd.DataFrame(y_best_model).to_csv("regression_SS.csv", header = None, index = None)
+```
+
+# Expected results
+
+Expected value of **`MAPE`: 178%**
+
