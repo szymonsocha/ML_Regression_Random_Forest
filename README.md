@@ -1,11 +1,3 @@
----
-title: "Regression and Classification Results"
-subtitle: "Machine Learning Project"
-author: "Szymon Socha"
-date: "June 6, 2022"
-output: beamer_presentation
----
-
 ## Regression
 
 
