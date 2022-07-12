@@ -15,4 +15,9 @@ Algorithm selection:
 * Out-of-sample accuracy comparision of various algorithms
 * **Random Forrest Regressor with `n_estimators=1000`, `max_features=38`, `min_samples_split=19`, `max_depth=35`, `min_samples_leaf = 3`**
 
+</br>
+<p align="center">
+  <img src="https://github.com/szymonsocha/ML_Regression_Random_Forrest/blob/main/data/rf_oos_predictions.jpg?raw=true" alt="Random Forrest Out-of-sample Predictions"/>
+</p>
+
 Expected value of **`MAPE`: 9%**
