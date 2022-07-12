@@ -1,5 +1,6 @@
-## Regression
+## Description
 
+In this project I am doing regression on weather data and making predictions on traffic. At the very beginning I do the data preparation. I clean them of outliers and prepare them for further prediction. To make predictions I use machine learning algorithms (Linear, Lasso, Ridge and Elastic Net Regression, Random Forrest, KNN regressor, SVM), compare their performance and make predictions on a test set. The main task of the project is to make a prediction with the lowest possible prediction error as measured by MAPE (Mean Absolute Percentage Error).
 
 Algorithms considered:
 
